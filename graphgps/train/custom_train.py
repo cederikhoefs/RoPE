@@ -111,6 +111,17 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
         run = wandb.init(entity=cfg.wandb.entity, project=cfg.wandb.project,
                          name=wandb_name)
         run.config.update(cfg_to_dict(cfg))
+        
+        # Log model architecture and configuration
+        model_config = {
+            'model_architecture': str(model),
+            'model_parameters': cfg.params,
+            'model_type': cfg.model.type,
+        }
+        
+        run.log(model_config)
+       
+        logging.info(f"[*] Logged model configuration to WandB: {model_config}")
 
     num_splits = len(loggers)
     split_names = ['val', 'test']

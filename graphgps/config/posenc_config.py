@@ -9,6 +9,7 @@ def set_cfg_posenc(cfg):
 
     # Argument group for each Positional Encoding class.
     cfg.posenc_LapPE = CN()
+    cfg.posenc_LapRoPE = CN()
     cfg.posenc_SignNet = CN()
     cfg.posenc_RWSE = CN()
     cfg.posenc_HKdiagSE = CN()
@@ -16,7 +17,7 @@ def set_cfg_posenc(cfg):
     cfg.posenc_EquivStableLapPE = CN()
 
     # Common arguments to all PE types.
-    for name in ['posenc_LapPE', 'posenc_SignNet',
+    for name in ['posenc_LapPE', 'posenc_LapRoPE', 'posenc_SignNet', 'posenc_SignNetRoPE',
                  'posenc_RWSE', 'posenc_HKdiagSE', 'posenc_ElstaticSE']:
         pecfg = getattr(cfg, name)
 
@@ -51,8 +52,9 @@ def set_cfg_posenc(cfg):
     cfg.posenc_EquivStableLapPE.raw_norm_type = 'none'
 
     # Config for Laplacian Eigen-decomposition for PEs that use it.
-    for name in ['posenc_LapPE', 'posenc_SignNet', 'posenc_EquivStableLapPE']:
+    for name in ['posenc_LapPE', 'posenc_LapRoPE', 'posenc_SignNet', 'posenc_EquivStableLapPE']:
         pecfg = getattr(cfg, name)
+
         pecfg.eigen = CN()
 
         # The normalization scheme for the graph Laplacian: 'none', 'sym', or 'rw'
@@ -61,8 +63,12 @@ def set_cfg_posenc(cfg):
         # The normalization scheme for the eigen vectors of the Laplacian
         pecfg.eigen.eigvec_norm = 'L2'
 
-        # Maximum number of top smallest frequencies & eigenvectors to use
+        # Maximum number of top smallest frequencies / eigenvectors to use
         pecfg.eigen.max_freqs = 10
+
+        pecfg.eigen.use_lanczos = False
+
+        
 
     # Config for SignNet-specific options.
     cfg.posenc_SignNet.phi_out_dim = 4

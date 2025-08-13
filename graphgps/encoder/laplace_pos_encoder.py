@@ -4,25 +4,29 @@ import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_node_encoder
 
-
 @register_node_encoder('LapPE')
 class LapPENodeEncoder(torch.nn.Module):
     """Laplace Positional Embedding node encoder.
 
     LapPE of size dim_pe will get appended to each node feature vector.
     If `expand_x` set True, original node features will be first linearly
-    projected to (dim_emb - dim_pe) size and the concatenated with LapPE.
+    projected to (emb_dim - dim_pe) size and the concatenated with LapPE.
 
     Args:
-        dim_emb: Size of final node embedding
-        expand_x: Expand node features `x` from dim_in to (dim_emb - dim_pe)
+        emb_dim: Size of final node embedding
+        expand_x: Expand node features `x` from dim_in to (emb_dim - dim_pe)
+        rotational: Store PEs in batch.t for rotational use instead of concatenating
     """
 
-    def __init__(self, dim_emb, expand_x=True):
+    def __init__(self, emb_dim, expand_x=True, rotational=False):
         super().__init__()
         dim_in = cfg.share.dim_in  # Expected original input node features dim
 
-        pecfg = cfg.posenc_LapPE
+        if rotational:
+            pecfg = cfg.posenc_LapRoPE
+        else:
+            pecfg = cfg.posenc_LapPE
+
         dim_pe = pecfg.dim_pe  # Size of Laplace PE embedding
         model_type = pecfg.model  # Encoder NN model type for PEs
         if model_type not in ['Transformer', 'DeepSet']:
@@ -34,14 +38,18 @@ class LapPENodeEncoder(torch.nn.Module):
         max_freqs = pecfg.eigen.max_freqs  # Num. eigenvectors (frequencies)
         norm_type = pecfg.raw_norm_type.lower()  # Raw PE normalization layer type
         self.pass_as_var = pecfg.pass_as_var  # Pass PE also as a separate variable
-
-        if dim_emb - dim_pe < 0: # formerly 1, but you could have zero feature size
+        self.max_freqs = max_freqs
+        
+        # Store the flag for rotational use
+        self.rotational = rotational
+        
+        if emb_dim - dim_pe < 0: # formerly 1, but you could have zero feature size
             raise ValueError(f"LapPE size {dim_pe} is too large for "
-                             f"desired embedding size of {dim_emb}.")
+                             f"desired embedding size of {emb_dim}.")
 
-        if expand_x and dim_emb - dim_pe > 0:
-            self.linear_x = nn.Linear(dim_in, dim_emb - dim_pe)
-        self.expand_x = expand_x and dim_emb - dim_pe > 0
+        if expand_x and emb_dim - dim_pe > 0:
+            self.linear_x = nn.Linear(dim_in, emb_dim - dim_pe)
+        self.expand_x = expand_x and emb_dim - dim_pe > 0
 
         # Initial projection of eigenvalue and the node's eigenvector value
         self.linear_A = nn.Linear(2, dim_pe)
@@ -136,9 +144,39 @@ class LapPENodeEncoder(torch.nn.Module):
             h = self.linear_x(batch.x)
         else:
             h = batch.x
-        # Concatenate final PEs to input embedding
-        batch.x = torch.cat((h, pos_enc), 1)
-        # Keep PE also separate in a variable (e.g. for skip connections to input)
-        if self.pass_as_var:
-            batch.pe_LapPE = pos_enc
+            
+        # Handle positional encoding based on the store_in_t_batch flag
+        if self.rotational:
+            # Store positional encoding in batch.t for rotational use
+            batch.t = pos_enc
+        else:
+            # Concatenate final PEs to input embedding
+            batch.x = torch.cat((h, pos_enc), 1)
+            if self.pass_as_var:
+                # Keep PE also separate in a variable (e.g. for skip connections to input)
+                batch.pe_LapPE = pos_enc
+
         return batch
+
+
+
+@register_node_encoder('LapRoPE')
+class LapRoPE(LapPENodeEncoder):
+    """Laplace Rotational Positional Embedding node encoder.
+    
+    This encoder computes Laplace Positional Embeddings and stores them
+    in batch.t for rotational use instead of concatenating to node features.
+    
+    Args:
+        emb_dim: Size of final node embedding
+        expand_x: Expand node features `x` from dim_in to emb_dim
+    """
+    
+    def __init__(self, emb_dim):
+        # Initialize with rotational=True to store PEs in batch.t
+        super().__init__(emb_dim=emb_dim, expand_x=False, rotational=True)
+        
+    def forward(self, batch):
+        # Use the parent class forward method which will store PEs in batch.t
+        # when rotational=True (which we set in __init__)
+        return super().forward(batch)

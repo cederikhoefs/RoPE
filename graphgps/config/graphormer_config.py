@@ -18,6 +18,6 @@ def set_cfg_gt(cfg):
     cfg.posenc_GraphormerBias.enable = False
     cfg.posenc_GraphormerBias.node_degrees_only = False
     cfg.posenc_GraphormerBias.dim_pe = 0
-    cfg.posenc_GraphormerBias.num_spatial_types = None
-    cfg.posenc_GraphormerBias.num_in_degrees = None
-    cfg.posenc_GraphormerBias.num_out_degrees = None
+    cfg.posenc_GraphormerBias.num_spatial_types = 0
+    cfg.posenc_GraphormerBias.num_in_degrees = 0
+    cfg.posenc_GraphormerBias.num_out_degrees = 0

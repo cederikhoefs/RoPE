@@ -15,6 +15,9 @@ from graphgps.encoder.linear_node_encoder import LinearNodeEncoder
 from graphgps.encoder.equivstable_laplace_pos_encoder import EquivStableLapPENodeEncoder
 from graphgps.encoder.graphormer_encoder import GraphormerEncoder
 
+from torch_geometric.graphgym.models.encoder import IntegerFeatureEncoder
+
+
 
 def concat_node_encoders(encoder_classes, pe_enc_names):
     """
@@ -39,18 +42,18 @@ def concat_node_encoders(encoder_classes, pe_enc_names):
         enc2_cls = None
         enc2_name = None
 
-        def __init__(self, dim_emb):
+        def __init__(self, emb_dim):
             super().__init__()
             
             if cfg.posenc_EquivStableLapPE.enable: # Special handling for Equiv_Stable LapPE where node feats and PE are not concat
-                self.encoder1 = self.enc1_cls(dim_emb)
-                self.encoder2 = self.enc2_cls(dim_emb)
+                self.encoder1 = self.enc1_cls(emb_dim)
+                self.encoder2 = self.enc2_cls(emb_dim)
             else:
                 # PE dims can only be gathered once the cfg is loaded.
                 enc2_dim_pe = getattr(cfg, f"posenc_{self.enc2_name}").dim_pe
 
-                self.encoder1 = self.enc1_cls(dim_emb - enc2_dim_pe)
-                self.encoder2 = self.enc2_cls(dim_emb, expand_x=False)
+                self.encoder1 = self.enc1_cls(emb_dim - enc2_dim_pe)
+                self.encoder2 = self.enc2_cls(emb_dim, expand_x=False)
 
         def forward(self, batch):
             batch = self.encoder1(batch)
@@ -66,14 +69,14 @@ def concat_node_encoders(encoder_classes, pe_enc_names):
         enc3_cls = None
         enc3_name = None
 
-        def __init__(self, dim_emb):
+        def __init__(self, emb_dim):
             super().__init__()
             # PE dims can only be gathered once the cfg is loaded.
             enc2_dim_pe = getattr(cfg, f"posenc_{self.enc2_name}").dim_pe
             enc3_dim_pe = getattr(cfg, f"posenc_{self.enc3_name}").dim_pe
-            self.encoder1 = self.enc1_cls(dim_emb - enc2_dim_pe - enc3_dim_pe)
-            self.encoder2 = self.enc2_cls(dim_emb - enc3_dim_pe, expand_x=False)
-            self.encoder3 = self.enc3_cls(dim_emb, expand_x=False)
+            self.encoder1 = self.enc1_cls(emb_dim - enc2_dim_pe - enc3_dim_pe)
+            self.encoder2 = self.enc2_cls(emb_dim - enc3_dim_pe, expand_x=False)
+            self.encoder3 = self.enc3_cls(emb_dim, expand_x=False)
 
         def forward(self, batch):
             batch = self.encoder1(batch)
@@ -99,13 +102,23 @@ def concat_node_encoders(encoder_classes, pe_enc_names):
                          f"{len(encoder_classes)} encoder classes.")
 
 
+@register_node_encoder('Int3')
+class IntegerFeatureEncoder3(IntegerFeatureEncoder):
+    def __init__(self, emb_dim, num_classes=3):
+        super().__init__(emb_dim, num_classes)
+
+    def forward(self, batch):
+        batch = super().forward(batch)
+        return batch
+
 # Dataset-specific node encoders.
 ds_encs = {'Atom': AtomEncoder,
            'ASTNode': ASTNodeEncoder,
            'PPANode': PPANodeEncoder,
            'TypeDictNode': TypeDictNodeEncoder,
            'VOCNode': VOCNodeEncoder,
-           'LinearNode': LinearNodeEncoder}
+           'LinearNode': LinearNodeEncoder,
+           'Int3': IntegerFeatureEncoder3}
 
 # Positional Encoding node encoders.
 pe_encs = {'LapPE': LapPENodeEncoder,

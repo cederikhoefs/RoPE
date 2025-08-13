@@ -11,6 +11,7 @@ from torch_geometric.utils import to_dense_batch
 from graphgps.layer.bigbird_layer import SingleBigBirdLayer
 from graphgps.layer.gatedgcn_layer import GatedGCNLayer
 from graphgps.layer.gine_conv_layer import GINEConvESLapPE
+from graphgps.layer.graphrope import GraphRoPE
 
 
 class GPSLayer(nn.Module):
@@ -21,7 +22,8 @@ class GPSLayer(nn.Module):
                  local_gnn_type, global_model_type, num_heads, act='relu',
                  pna_degrees=None, equivstable_pe=False, dropout=0.0,
                  attn_dropout=0.0, layer_norm=False, batch_norm=True,
-                 bigbird_cfg=None, log_attn_weights=False):
+                 bigbird_cfg=None, log_attn_weights=False,
+                 graphrope_cfg=None, shared_omega_q=None, shared_omega_k=None):
         super().__init__()
 
         self.dim_h = dim_h
@@ -117,6 +119,23 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
+        elif global_model_type == "GraphRoPE":
+            if graphrope_cfg is None:
+                raise ValueError("graphrope_cfg must be provided when using GraphRoPE")
+            
+            self.self_attn = GraphRoPE(
+                k=graphrope_cfg.t_dim, 
+                d=dim_h, 
+                num_heads=num_heads, 
+                dropout=self.attn_dropout, 
+                enable=graphrope_cfg.enable,
+                init_omega=graphrope_cfg.init_omega,
+                attn_type=graphrope_cfg.attn_type,
+                double_omega=graphrope_cfg.double_omega,
+                freeze_omega=graphrope_cfg.freeze_omega,
+                shared_omega_q=shared_omega_q,
+                shared_omega_k=shared_omega_k
+            )
         else:
             raise ValueError(f"Unsupported global x-former model: "
                              f"{global_model_type}")
@@ -196,18 +215,24 @@ class GPSLayer(nn.Module):
 
         # Multi-head attention.
         if self.self_attn is not None:
-            h_dense, mask = to_dense_batch(h, batch.batch)
-            if self.global_model_type == 'Transformer':
-                h_attn = self._sa_block(h_dense, None, ~mask)[mask]
-            elif self.global_model_type == 'BiasedTransformer':
-                # Use Graphormer-like conditioning, requires `batch.attn_bias`.
-                h_attn = self._sa_block(h_dense, batch.attn_bias, ~mask)[mask]
-            elif self.global_model_type == 'Performer':
-                h_attn = self.self_attn(h_dense, mask=mask)[mask]
-            elif self.global_model_type == 'BigBird':
-                h_attn = self.self_attn(h_dense, attention_mask=mask)
+            if self.global_model_type == 'GraphRoPE':
+                # GraphRoPE handles dense batch conversion internally
+                # Create a temporary batch with current hidden states
+                temp_batch = Batch(x=h, batch=batch.batch, t=batch.t if hasattr(batch, 't') else None)
+                h_attn = self.self_attn(temp_batch)
             else:
-                raise RuntimeError(f"Unexpected {self.global_model_type}")
+                h_dense, mask = to_dense_batch(h, batch.batch)
+                if self.global_model_type == 'Transformer':
+                    h_attn = self._sa_block(h_dense, None, ~mask)[mask]
+                elif self.global_model_type == 'BiasedTransformer':
+                    # Use Graphormer-like conditioning, requires `batch.attn_bias`.
+                    h_attn = self._sa_block(h_dense, batch.attn_bias, ~mask)[mask]
+                elif self.global_model_type == 'Performer':
+                    h_attn = self.self_attn(h_dense, mask=mask)[mask]
+                elif self.global_model_type == 'BigBird':
+                    h_attn = self.self_attn(h_dense, attention_mask=mask)
+                else:
+                    raise RuntimeError(f"Unexpected {self.global_model_type}")
 
             h_attn = self.dropout_attn(h_attn)
             h_attn = h_in1 + h_attn  # Residual connection.

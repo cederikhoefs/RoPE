@@ -13,10 +13,10 @@ class EquivStableLapPENodeEncoder(torch.nn.Module):
     Based on the approach proposed in paper https://openreview.net/pdf?id=e95i1IHcWj
     
     Args:
-        dim_emb: Size of final node embedding
+        emb_dim: Size of final node embedding
     """
 
-    def __init__(self, dim_emb):
+    def __init__(self, emb_dim):
         super().__init__()
 
         pecfg = cfg.posenc_EquivStableLapPE
@@ -28,7 +28,7 @@ class EquivStableLapPENodeEncoder(torch.nn.Module):
         else:
             self.raw_norm = None
 
-        self.linear_encoder_eigenvec = nn.Linear(max_freqs, dim_emb)
+        self.linear_encoder_eigenvec = nn.Linear(max_freqs, emb_dim)
 
     def forward(self, batch):
         if not (hasattr(batch, 'EigVals') and hasattr(batch, 'EigVecs')):

@@ -7,6 +7,8 @@ from torch_geometric.graphgym.models.layer import (new_layer_config,
 from torch_geometric.graphgym.register import register_network
 
 from graphgps.layer.gps_layer import GPSLayer
+from graphgps.layer.graphrope import init_omega_matrix
+import torch.nn as nn
 
 
 class FeatureEncoder(torch.nn.Module):
@@ -44,6 +46,11 @@ class FeatureEncoder(torch.nn.Module):
                 self.edge_encoder_bn = BatchNorm1dNode(
                     new_layer_config(cfg.gnn.dim_edge, -1, -1, has_act=False,
                                      has_bias=False, cfg=cfg))
+                
+        if cfg.gt.graphrope.enable and cfg.gt.graphrope.encoder:
+            RoPEncoder = register.node_encoder_dict[
+                cfg.gt.graphrope.encoder]
+            self.rotational_encoder = RoPEncoder(emb_dim=cfg.gt.graphrope.t_dim)
 
     def forward(self, batch):
         for module in self.children():
@@ -80,8 +87,39 @@ class GPSModel(torch.nn.Module):
             local_gnn_type, global_model_type = cfg.gt.layer_type.split('+')
         except:
             raise ValueError(f"Unexpected layer type: {cfg.gt.layer_type}")
+            
+        # Create shared Omega matrices if GraphRoPE is enabled and sharing is requested
+        shared_omega_q = None
+        shared_omega_k = None
+        if global_model_type == "GraphRoPE" and cfg.gt.graphrope.enable and hasattr(cfg.gt.graphrope, 'share_omega') and cfg.gt.graphrope.share_omega:
+            shared_omega_q = nn.Linear(cfg.gt.graphrope.t_dim, cfg.gt.dim_hidden // 2, bias=False)
+            
+            # Initialize the shared Omega matrix
+            init_omega_matrix(shared_omega_q, cfg.gt.graphrope.init_omega, cfg.gt.dim_hidden, cfg.gt.graphrope.t_dim)
+                        
+            # Create second shared Omega matrix for K if double_omega is enabled
+            if cfg.gt.graphrope.double_omega:
+                shared_omega_k = nn.Linear(cfg.gt.graphrope.t_dim, cfg.gt.dim_hidden // 2, bias=False)
+                
+                init_omega_matrix(shared_omega_k, cfg.gt.graphrope.init_omega, cfg.gt.dim_hidden, cfg.gt.graphrope.t_dim)
+            
+            # Freeze shared omega matrices if requested
+            if cfg.gt.graphrope.freeze_omega:
+                for param in shared_omega_q.parameters():
+                    param.requires_grad = False
+                if shared_omega_k is not None:
+                    for param in shared_omega_k.parameters():
+                        param.requires_grad = False
+
         layers = []
         for _ in range(cfg.gt.layers):
+            # Create a copy of the graphrope config and add shared matrices
+            graphrope_cfg = cfg.gt.graphrope
+            if shared_omega_q is not None:
+                # We need to add the shared matrices to the config that gets passed to GPSLayer
+                # Since cfg objects might be read-only, we'll pass them as separate parameters
+                pass
+            
             layers.append(GPSLayer(
                 dim_h=cfg.gt.dim_hidden,
                 local_gnn_type=local_gnn_type,
@@ -96,6 +134,9 @@ class GPSModel(torch.nn.Module):
                 batch_norm=cfg.gt.batch_norm,
                 bigbird_cfg=cfg.gt.bigbird,
                 log_attn_weights=cfg.train.mode == 'log-attn-weights',
+                graphrope_cfg=graphrope_cfg,
+                shared_omega_q=shared_omega_q,
+                shared_omega_k=shared_omega_k
             ))
         self.layers = torch.nn.Sequential(*layers)
 

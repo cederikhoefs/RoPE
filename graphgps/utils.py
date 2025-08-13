@@ -154,7 +154,7 @@ def unbatch(src: Tensor, batch: Tensor, dim: int = 0) -> List[Tensor]:
     Args:
         src (Tensor): The source tensor.
         batch (LongTensor): The batch vector
-            :math:`\mathbf{b} \in {\{ 0, \ldots, B-1\}}^N`, which assigns each
+            :math:`\\mathbf{b} \\in \\{ 0, \\ldots, B-1 \\}^N`, which assigns each
             entry in :obj:`src` to a specific example. Must be ordered.
         dim (int, optional): The dimension along which to split the :obj:`src`
             tensor. (default: :obj:`0`)
@@ -173,7 +173,7 @@ def unbatch_edge_index(edge_index: Tensor, batch: Tensor) -> List[Tensor]:
     Args:
         edge_index (Tensor): The edge_index tensor. Must be ordered.
         batch (LongTensor): The batch vector
-            :math:`\mathbf{b} \in {\{ 0, \ldots, B-1\}}^N`, which assigns each
+            :math:`\\mathbf{b} \\in \\{ 0, \\ldots, B-1 \\}^N`, which assigns each
             node to a specific example. Must be ordered.
     :rtype: :class:`List[Tensor]`
     """

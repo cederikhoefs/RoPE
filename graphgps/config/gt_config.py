@@ -70,3 +70,14 @@ def set_cfg_gt(cfg):
     cfg.gt.bigbird.block_size = 3
 
     cfg.gt.bigbird.layer_norm_eps = 1e-6
+
+    cfg.gt.graphrope = CN()
+
+    cfg.gt.graphrope.enable = False
+    cfg.gt.graphrope.init_omega = "zero"
+    cfg.gt.graphrope.attn_type = "Full"
+    cfg.gt.graphrope.encoder = ""
+    cfg.gt.graphrope.t_dim = 0
+    cfg.gt.graphrope.share_omega = False
+    cfg.gt.graphrope.double_omega = False
+    cfg.gt.graphrope.freeze_omega = False

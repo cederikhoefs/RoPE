@@ -254,7 +254,7 @@ class NodeEncoder(torch.nn.Module):
 
 @register_node_encoder("GraphormerBias")
 class GraphormerEncoder(torch.nn.Sequential):
-    def __init__(self, dim_emb, *args, **kwargs):
+    def __init__(self, emb_dim, *args, **kwargs):
         encoders = [
             BiasEncoder(
                 cfg.graphormer.num_heads,
@@ -263,7 +263,7 @@ class GraphormerEncoder(torch.nn.Sequential):
                 cfg.graphormer.use_graph_token
             ),
             NodeEncoder(
-                dim_emb,
+                emb_dim,
                 cfg.posenc_GraphormerBias.num_in_degrees,
                 cfg.posenc_GraphormerBias.num_out_degrees,
                 cfg.graphormer.input_dropout,

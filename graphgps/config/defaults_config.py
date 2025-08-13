@@ -34,3 +34,9 @@ def extended_cfg(cfg):
     # always checkpoint the current best model based on validation performance,
     # instead, when False, follow cfg.train.eval_period checkpointing frequency.
     cfg.train.ckpt_best = False
+    
+    # Initialize devices with a valid default value (empty list) instead of None
+    cfg.devices = []
+
+    cfg.save_cache = True
+    cfg.parallel_eigen = False

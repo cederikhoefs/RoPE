@@ -8,19 +8,22 @@ import torch
 import torch_geometric.transforms as T
 from numpy.random import default_rng
 from ogb.graphproppred import PygGraphPropPredDataset
-from torch_geometric.datasets import (Actor, GNNBenchmarkDataset, Planetoid,
-                                      TUDataset, WebKB, WikipediaNetwork, ZINC)
+from torch_geometric.datasets import (Actor, GNNBenchmarkDataset, HeterophilousGraphDataset,
+                                      Planetoid, TUDataset, WebKB, WikipediaNetwork, ZINC, QM9)
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.loader import load_pyg, load_ogb, set_dataset_attr
 from torch_geometric.graphgym.register import register_loader
 
 from graphgps.loader.dataset.aqsol_molecules import AQSOL
 from graphgps.loader.dataset.coco_superpixels import COCOSuperpixels
+from graphgps.loader.dataset.gkat_synthetic import GKATSyntheticDataset
+from graphgps.loader.dataset.graph_cifar10 import GraphCIFAR10
 from graphgps.loader.dataset.malnet_tiny import MalNetTiny
 from graphgps.loader.dataset.voc_superpixels import VOCSuperpixels
+from graphgps.loader.dataset.grid_rewiring_synthetic import GridRewiringDataset
 from graphgps.loader.split_generator import (prepare_splits,
                                              set_dataset_splits)
-from graphgps.transform.posenc_stats import compute_posenc_stats
+from graphgps.transform.posenc_stats import add_spectral_stats, compute_posenc_stats
 from graphgps.transform.task_preprocessing import task_specific_preprocessing
 from graphgps.transform.transforms import (pre_transform_in_memory,
                                            typecast_x, concat_x_and_pos,
@@ -66,17 +69,17 @@ def log_loaded_dataset(dataset, format, name):
         else:
             logging.info(f"  num edge classes: {len(torch.unique(labels))}")
 
-    ## Show distribution of graph sizes.
-    # graph_sizes = [d.num_nodes if hasattr(d, 'num_nodes') else d.x.shape[0]
-    #                for d in dataset]
-    # hist, bin_edges = np.histogram(np.array(graph_sizes), bins=10)
-    # logging.info(f'   Graph size distribution:')
-    # logging.info(f'     mean: {np.mean(graph_sizes)}')
-    # for i, (start, end) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
-    #     logging.info(
-    #         f'     bin {i}: [{start:.2f}, {end:.2f}]: '
-    #         f'{hist[i]} ({hist[i] / hist.sum() * 100:.2f}%)'
-    #     )
+    # Show distribution of graph sizes.
+    graph_sizes = [d.num_nodes if hasattr(d, 'num_nodes') else d.x.shape[0]
+                   for d in dataset]
+    hist, bin_edges = np.histogram(np.array(graph_sizes), bins=10)
+    logging.info(f'   Graph size distribution:')
+    logging.info(f'     mean: {np.mean(graph_sizes)}')
+    for i, (start, end) in enumerate(zip(bin_edges[:-1], bin_edges[1:])):
+        logging.info(
+            f'     bin {i}: [{start:.2f}, {end:.2f}]: '
+            f'{hist[i]} ({hist[i] / hist.sum() * 100:.2f}%)'
+        )
 
 
 @register_loader('custom_master_loader')
@@ -109,6 +112,9 @@ def load_dataset_master(format, name, dataset_dir):
         elif pyg_dataset_id == 'GNNBenchmarkDataset':
             dataset = preformat_GNNBenchmarkDataset(dataset_dir, name)
 
+        elif pyg_dataset_id == 'HeterophilousGraphDataset':
+            dataset = preformat_HeterophilousGraphDataset(dataset_dir, name)
+
         elif pyg_dataset_id == 'MalNetTiny':
             dataset = preformat_MalNetTiny(dataset_dir, feature_set=name)
 
@@ -131,7 +137,7 @@ def load_dataset_master(format, name, dataset_dir):
             dataset = preformat_ZINC(dataset_dir, name)
             
         elif pyg_dataset_id == 'AQSOL':
-            dataset = preformat_AQSOL(dataset_dir, name)
+            dataset = preformat_AQSOL(dataset_dir)
 
         elif pyg_dataset_id == 'VOCSuperpixels':
             dataset = preformat_VOCSuperpixels(dataset_dir, name,
@@ -140,6 +146,15 @@ def load_dataset_master(format, name, dataset_dir):
         elif pyg_dataset_id == 'COCOSuperpixels':
             dataset = preformat_COCOSuperpixels(dataset_dir, name,
                                                 cfg.dataset.slic_compactness)
+
+        elif pyg_dataset_id == 'GKATSynthetic':
+            dataset = preformat_GKATSynthetic(dataset_dir, name)
+
+        elif pyg_dataset_id == 'GridRewiring':
+            dataset = preformat_GridRewiring(dataset_dir, name)
+
+        elif pyg_dataset_id == 'GraphCIFAR10':
+            dataset = preformat_GraphCIFAR10(dataset_dir, name)
 
         else:
             raise ValueError(f"Unexpected PyG Dataset identifier: {format}")
@@ -197,12 +212,27 @@ def load_dataset_master(format, name, dataset_dir):
                 logging.info(f"Parsed {pe_name} PE kernel times / steps: "
                              f"{pecfg.kernel.times}")
     if pe_enabled_list:
-        start = time.perf_counter()
-        logging.info(f"Precomputing Positional Encoding statistics: "
-                     f"{pe_enabled_list} for all graphs...")
         # Estimate directedness based on 10 graphs to save time.
+        # Note: dataset may have been modified by task_specific_preprocessing, re-evaluate directedness if critical.
         is_undirected = all(d.is_undirected() for d in dataset[:10])
-        logging.info(f"  ...estimated to be undirected: {is_undirected}")
+        logging.info(f"  PE processing: estimated to be undirected: {is_undirected}")
+
+        # Stage 1: Precompute and cache spectral statistics (eigen-decompositions)
+        # This will use disk caching if dataset.processed_dir is available and passed.
+        s_time_spec = time.perf_counter()
+        logging.info(f"Precomputing and caching spectral statistics (e.g. Eigendecompositions) for PEs: {pe_enabled_list}...")
+        
+        add_spectral_stats(dataset, pe_enabled_list, is_undirected, cfg)
+
+        elapsed_spec = time.perf_counter() - s_time_spec
+        logging.info(f"Spectral statistics computation/caching done! Took {time.strftime('%H:%M:%S', time.gmtime(elapsed_spec)) + f'{elapsed_spec:.2f}'[-3:]}")
+
+        # for i in range(10):
+        #     print(dataset[i])
+
+        # Stage 2: Compute actual PE values (e.g., LapPE EigVals, RWSE stats) using cached spectra.
+        s_time_pe = time.perf_counter()
+        logging.info(f"Precomputing Positional Encoding values (e.g., EigVals, RWSE) for PEs: {pe_enabled_list}...")
         pre_transform_in_memory(dataset,
                                 partial(compute_posenc_stats,
                                         pe_types=pe_enabled_list,
@@ -210,25 +240,45 @@ def load_dataset_master(format, name, dataset_dir):
                                         cfg=cfg),
                                 show_progress=True
                                 )
-        elapsed = time.perf_counter() - start
-        timestr = time.strftime('%H:%M:%S', time.gmtime(elapsed)) \
-                  + f'{elapsed:.2f}'[-3:]
-        logging.info(f"Done! Took {timestr}")
+        elapsed = time.perf_counter() - s_time_pe # This elapsed is for the second stage only
+        overall_elapsed = time.perf_counter() - s_time_spec # Overall time for both stages
+        timestr_pe = time.strftime('%H:%M:%S', time.gmtime(elapsed)) + f'{elapsed:.2f}'[-3:]
+        timestr_overall = time.strftime('%H:%M:%S', time.gmtime(overall_elapsed)) + f'{overall_elapsed:.2f}'[-3:]
+        logging.info(f"Positional Encoding value computation done! Took {timestr_pe}")
+        logging.info(f"Total PE preprocessing time (spectral + values): {timestr_overall}")
+
+    # Limit dataset size for testing/overfitting if NUM_SAMPLES is set
+    # dataset = limit_dataset_size(dataset, NUM_SAMPLES)
 
     # Set standard dataset train/val/test splits
     if hasattr(dataset, 'split_idxs'):
-        set_dataset_splits(dataset, dataset.split_idxs)
+        # Convert split indices to tensors if they are lists
+        split_idxs = dataset.split_idxs
+        if isinstance(split_idxs[0], list):
+            split_idxs = [torch.tensor(split_idx, dtype=torch.long) for split_idx in split_idxs]
+        set_dataset_splits(dataset, split_idxs)
         delattr(dataset, 'split_idxs')
 
     # Verify or generate dataset train/val/test splits
     prepare_splits(dataset)
-
+    
+    # Special handling for WattsStrogatz and GridRewiring datasets to fix PyTorch Geometric slicing issues
+    # The set_dataset_splits function adds graph index attributes that are incompatible
+    # with PyG's slicing mechanism for InMemoryDataset, so we remove their SLICES but keep the attributes
+    if format == 'PyG-GridRewiring':
+        problematic_attrs = ['train_graph_index', 'val_graph_index', 'test_graph_index']
+        for attr in problematic_attrs:
+            # Only remove the slices, keep the data attributes as they're needed for training
+            if attr in dataset.slices:
+                del dataset.slices[attr]
+    
     # Precompute in-degree histogram if needed for PNAConv.
     if cfg.gt.layer_type.startswith('PNA') and len(cfg.gt.pna_degrees) == 0:
         cfg.gt.pna_degrees = compute_indegree_histogram(
             dataset[dataset.data['train_graph_index']])
         # print(f"Indegrees: {cfg.gt.pna_degrees}")
         # print(f"Avg:{np.mean(cfg.gt.pna_degrees)}")
+
 
     return dataset
 
@@ -267,7 +317,10 @@ def preformat_GNNBenchmarkDataset(dataset_dir, name):
     if name in ['MNIST', 'CIFAR10']:
         tf_list = [concat_x_and_pos]  # concat pixel value and pos. coordinate
         tf_list.append(partial(typecast_x, type_str='float'))
-    elif name in ['PATTERN', 'CLUSTER', 'CSL']:
+    elif name == "PATTERN":
+        # Cast x to long
+        tf_list = [partial(typecast_x, type_str='long')]
+    elif name in ['CLUSTER', 'CSL', 'DD']:
         tf_list = []
     else:
         raise ValueError(f"Loading dataset '{name}' from "
@@ -282,6 +335,29 @@ def preformat_GNNBenchmarkDataset(dataset_dir, name):
     elif name == 'CSL':
         dataset = GNNBenchmarkDataset(root=dataset_dir, name=name)
 
+    return dataset
+
+
+def preformat_HeterophilousGraphDataset(dataset_dir, name):
+    """Load and preformat datasets from PyG's HeterophilousGraphDataset.
+    
+    The heterophilous graphs from "A Critical Look at the Evaluation of GNNs 
+    under Heterophily: Are We Really Making Progress?" paper.
+    
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: name of the specific dataset ('Roman-empire', 'Amazon-ratings', 
+              'Minesweeper', 'Tolokers', 'Questions')
+    
+    Returns:
+        PyG dataset object
+    """
+    valid_names = ['Roman-empire', 'Amazon-ratings', 'Minesweeper', 'Tolokers', 'Questions']
+    if name not in valid_names:
+        raise ValueError(f"Unsupported HeterophilousGraphDataset name: {name}. "
+                         f"Must be one of: {valid_names}")
+    
+    dataset = HeterophilousGraphDataset(root=dataset_dir, name=name)
     return dataset
 
 
@@ -535,7 +611,7 @@ def preformat_TUDataset(dataset_dir, name):
     """
     if name in ['DD', 'NCI1', 'ENZYMES', 'PROTEINS', 'TRIANGLES']:
         func = None
-    elif name.startswith('IMDB-') or name == "COLLAB":
+    elif name.startswith('IMDB-') or name == "COLLAB" or name == "REDDIT-MULTI-5K":
         func = T.Constant()
     else:
         raise ValueError(f"Loading dataset '{name}' from "
@@ -611,6 +687,79 @@ def preformat_COCOSuperpixels(dataset_dir, name, slic_compactness):
          for split in ['train', 'val', 'test']]
     )
     return dataset
+
+
+def preformat_GKATSynthetic(dataset_dir, name):
+    """Load and preformat GKAT Synthetic motif detection datasets.
+
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: name of the specific motif type: 'Cycle', 'Grid', 'Ladder', 'CircularLadder', 'Caveman'
+
+    Returns:
+        PyG dataset object
+    """
+    if name not in ['Cycle', 'Grid', 'Ladder', 'CircularLadder', 'Caveman']:
+        raise ValueError(f"Unknown GKAT Synthetic dataset: {name}. "
+                         f"Must be one of: Cycle, Grid, Ladder, CircularLadder, Caveman")
+    
+    # Use the parent directory of dataset_dir to find the actual dataset files
+    # This accounts for the master loader creating a subdirectory
+    parent_dir = osp.dirname(dataset_dir) if dataset_dir.endswith('GKATSynthetic') else dataset_dir
+    dataset = GKATSyntheticDataset(parent_dir, name)
+    s_dict = dataset.get_idx_split()
+    dataset.split_idxs = [s_dict[s] for s in ['train', 'valid', 'test']]
+    
+    return dataset
+
+
+def preformat_GridRewiring(dataset_dir, name):
+    """Load and preformat Grid Rewiring synthetic datasets.
+
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: dataset name identifier (typically 'grid_rewiring')
+
+    Returns:
+        PyG dataset object
+    """
+    # Use the parent directory of dataset_dir to store the actual dataset files
+    parent_dir = osp.dirname(dataset_dir) if dataset_dir.endswith('GridRewiring') else dataset_dir
+    dataset = GridRewiringDataset(parent_dir, name)
+    
+    # Set node encoder configuration for TypeDictNodeEncoder
+    # GridRewiring has 2 node types: 0 = uncolored, 1 = colored
+    cfg.dataset.node_encoder_num_types = 2
+    
+    # Get split indices and store them as split_idxs attribute
+    # Do NOT call set_dataset_splits here as it creates incompatible graph index attributes
+    s_dict = dataset.get_idx_split()
+    dataset.split_idxs = [s_dict[s].tolist() for s in ['train', 'valid', 'test']]
+    
+    return dataset
+
+
+
+def preformat_GraphCIFAR10(dataset_dir, name):
+    """Load and preformat GraphCIFAR10 dataset.
+
+    Creates a graph version of CIFAR-10 where images are divided into patches
+    that become nodes in a grid graph.
+
+    Args:
+        dataset_dir: path where to store the cached dataset
+        name: split name ('train', 'val', 'test') or dataset name
+
+    Returns:
+        PyG dataset object
+    """
+    # GraphCIFAR10 uses join_dataset_splits pattern like ZINC and AQSOL
+    dataset = join_dataset_splits(
+        [GraphCIFAR10(root=dataset_dir, split=split)
+         for split in ['train', 'val', 'test']]
+    )
+    return dataset
+
 
 
 def join_dataset_splits(datasets):
